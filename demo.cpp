@@ -1,25 +1,14 @@
 /*=============================================================================
-    Copyright (c) 2001-2011 Joel de Guzman
+	
+	Garrett and Cody Wilson
+	2/9/2016
+	Computer Architecture
 
-    Distributed under the Boost Software License, Version 1.0. (See accompanying
-    file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+This is a demo parsing program using Spirit.
+
 =============================================================================*/
-///////////////////////////////////////////////////////////////////////////////
-//
-//  Plain calculator example demonstrating the grammar. The parser is a
-//  syntax checker only and does not do any semantic evaluation.
-//
-//  [ JDG May 10, 2002 ]        spirit1
-//  [ JDG March 4, 2007 ]       spirit2
-//  [ JDG February 21, 2011 ]   spirit2.5
-//
-///////////////////////////////////////////////////////////////////////////////
 
-// Spirit v2.5 allows you to suppress automatic generation
-// of predefined terminals to speed up complation. With
-// BOOST_SPIRIT_NO_PREDEFINED_TERMINALS defined, you are
-// responsible in creating instances of the terminals that
-// you need (e.g. see qi::uint_type uint_ below).
+
 #define BOOST_SPIRIT_NO_PREDEFINED_TERMINALS
 
 #include <boost/config/warning_disable.hpp>
@@ -38,33 +27,16 @@ namespace client
     template <typename Iterator>
     struct calculator : qi::grammar<Iterator, ascii::space_type>
     {
-        calculator() : calculator::base_type(expression)
+        calculator() : calculator::base_type(statement)
         {
-            qi::uint_type uint_;
+            qi::uint_type num;
+            statement = expr >> '+' >> statement | expr;
+            expr = num | expr >> '+' >> statement | '(' >> expr >> ')';
+            //op = '+' | '-' | '*' | '/';
 
-            expression =
-                term
-                >> *(   ('+' >> term)
-                    |   ('-' >> term)
-                    )
-                ;
-
-            term =
-                factor
-                >> *(   ('*' >> factor)
-                    |   ('/' >> factor)
-                    )
-                ;
-
-            factor =
-                uint_
-                |   '(' >> expression >> ')'
-                |   ('-' >> factor)
-                |   ('+' >> factor)
-                ;
         }
 
-        qi::rule<Iterator, ascii::space_type> expression, term, factor;
+        qi::rule<Iterator, ascii::space_type> statement, expr;
     };
 }
 
