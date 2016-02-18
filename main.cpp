@@ -8,6 +8,9 @@
  * http://boost.org/doc/libs/1_60_0/libs/spirit/example/qi/compiler_tutorial/calc4.cpp
  */
 
+// Allow easy debugging of parser (not working yet)
+// #define BOOST_SPIRIT_DEBUG
+
 // This will make it build faster (supposedly). We just have to specify
 // what type the elements of our grammar are.
 #define BOOST_SPIRIT_NO_PREDEFINED_TERMINALS
@@ -166,6 +169,11 @@ namespace client
 
             // Do what's inside parenthesis before mult/div
             factor = '(' >> expression >> ')' | uint_;
+
+            // Debugging
+            BOOST_SPIRIT_DEBUG_NODE(expression);
+            BOOST_SPIRIT_DEBUG_NODE(term);
+            BOOST_SPIRIT_DEBUG_NODE(factor);
         }
 
         // Specify the iterator, result, and skip types for each
