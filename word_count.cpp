@@ -1,192 +1,143 @@
-//#include "example.hpp"
-//  Copyright (c) 2001-2010 Hartmut Kaiser
-//  Copyright (c) 2001-2007 Joel de Guzman
-//
-//  Distributed under the Boost Software License, Version 1.0. (See accompanying
-//  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
-
-#include <iostream>
-#include <fstream>
-#include <string>
-#include <cstdlib>
-
-///////////////////////////////////////////////////////////////////////////////
-//  Helper function reading a file into a string
-///////////////////////////////////////////////////////////////////////////////
-inline std::string
-read_from_file(char const* infile)
-{
-    std::ifstream instream(infile);
-    if (!instream.is_open()) {
-        std::cerr << "Couldn't open file: " << infile << std::endl;
-        std::exit(-1);
-    }
-    instream.unsetf(std::ios::skipws);      // No white space skipping!
-    return std::string(std::istreambuf_iterator<char>(instream.rdbuf()),
-                       std::istreambuf_iterator<char>());
-}
-
-//  Copyright (c) 2001-2010 Hartmut Kaiser
-//
-//  Distributed under the Boost Software License, Version 1.0. (See accompanying
-//  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
-
-//  This example is the equivalent to the following lex program:
-/*
-//[wcp_flex_version
-    %{
-        int c = 0, w = 0, l = 0;
-    %}
-    word   [^ \t\n]+
-    eol    \n
-    %%
-    {word} { ++w; c += yyleng; }
-    {eol}  { ++c; ++l; }
-    .      { ++c; }
-    %%
-    main()
-    {
-        yylex();
-        printf("%d %d %d\n", l, w, c);
-    }
-//]
-*/
-//  Its purpose is to do the word count function of the wc command in UNIX. It
-//  prints the number of lines, words and characters in a file.
-//
-//  The example additionally demonstrates how to use the add_pattern(...)(...)
-//  syntax to define lexer patterns. These patterns are essentially parameter-
-//  less 'macros' for regular expressions, allowing to simplify their
-//  definition.
-
-// #define BOOST_SPIRIT_LEXERTL_DEBUG
 #define BOOST_VARIANT_MINIMIZE_SIZE
 
 #include <boost/config/warning_disable.hpp>
-//[wcp_includes
 #include <boost/spirit/include/qi.hpp>
 #include <boost/spirit/include/lex_lexertl.hpp>
 #include <boost/spirit/include/phoenix_operator.hpp>
 #include <boost/spirit/include/phoenix_statement.hpp>
 #include <boost/spirit/include/phoenix_container.hpp>
-//]
 
 #include <iostream>
 #include <string>
 
-//[wcp_namespaces
 using namespace boost::spirit;
 using namespace boost::spirit::ascii;
-//]
 
-///////////////////////////////////////////////////////////////////////////////
-//  Token definition: We use the lexertl based lexer engine as the underlying
-//                    lexer type.
-///////////////////////////////////////////////////////////////////////////////
-//[wcp_token_ids
+// Token definition
 enum tokenids
 {
     IDANY = lex::min_token_id + 10
 };
-//]
 
-//[wcp_token_definition
 template <typename Lexer>
-struct word_count_tokens : lex::lexer<Lexer>
+struct tokens : lex::lexer<Lexer>
 {
-    word_count_tokens()
+    tokens()
     {
-        // define patterns (lexer macros) to be used during token definition
-        // below
         this->self.add_pattern
-            ("WORD", "[^ \t\n]+")
-        ;
+            ("VARIABLE", "[^ \t\n0-9]+")
+            ("NUMBER", "[-+]?([0-9]*[.])?[0-9]+")
+            ("OP", "[+-*/]");
 
-        // define tokens and associate them with the lexer
-        word = "{WORD}";    // reference the pattern 'WORD' as defined above
+        variable = "{VARIABLE}";
+        number = "{NUMBER}";
+        op = "{OP}";
 
-        // this lexer will recognize 3 token types: words, newlines, and
-        // everything else
         this->self.add
-            (word)          // no token id is needed here
-            ('\n')          // characters are usable as tokens as well
-            (".", IDANY)    // string literals will not be escaped by the library
+            (variable)
+            (number)
+            (op)
+            //('\n')
+            //(".", IDANY);
         ;
     }
 
-    // the token 'word' exposes the matched string as its parser attribute
-    lex::token_def<std::string> word;
+    lex::token_def<std::string> variable, number, op;
 };
-//]
 
-///////////////////////////////////////////////////////////////////////////////
-//  Grammar definition
-///////////////////////////////////////////////////////////////////////////////
-//[wcp_grammar_definition
+// Grammar definition
 template <typename Iterator>
-struct word_count_grammar : qi::grammar<Iterator>
+struct grammar : qi::grammar<Iterator, ascii::space_type>
 {
     template <typename TokenDef>
-    word_count_grammar(TokenDef const& tok)
-      : word_count_grammar::base_type(start)
-      , c(0), w(0), l(0)
+    grammar(TokenDef const& tok)
+      : grammar::base_type(statement)
     {
         using boost::phoenix::ref;
         using boost::phoenix::size;
 
-        start =  *(   tok.word          [++ref(w), ref(c) += size(_1)]
-                  |   lit('\n')         [++ref(c), ++ref(l)]
-                  |   qi::token(IDANY)  [++ref(c)]
-                  )
-              ;
+        statement = expr >> tok.op >> statement | expr;
+        expr = tok.number | expr >> tok.op >> statement | '(' >> expr >> ')';
     }
 
-    std::size_t c, w, l;
-    qi::rule<Iterator> start;
+    qi::rule<Iterator, ascii::space_type> statement, expr;
 };
-//]
 
-///////////////////////////////////////////////////////////////////////////////
-//[wcp_main
 int main(int argc, char* argv[])
 {
-/*<  Define the token type to be used: `std::string` is available as the
-     type of the token attribute
->*/  typedef lex::lexertl::token<
-        char const*, boost::mpl::vector<std::string>
-    > token_type;
+	typedef lex::lexertl::token<char const*,
+            boost::mpl::vector<std::string> > token_type;
+	typedef lex::lexertl::lexer<token_type> lexer_type;
+	typedef tokens<lexer_type>::iterator_type iterator_type;
 
-/*<  Define the lexer type to use implementing the state machine
->*/  typedef lex::lexertl::lexer<token_type> lexer_type;
+	// Create lexer and grammar
+    tokens<lexer_type> lex;
+    grammar<iterator_type> g(lex);
+    //boost::spirit::ascii::space_type space; // skip spaces
 
-/*<  Define the iterator type exposed by the lexer type
->*/  typedef word_count_tokens<lexer_type>::iterator_type iterator_type;
-
-    // now we use the types defined above to create the lexer and grammar
-    // object instances needed to invoke the parsing process
-    word_count_tokens<lexer_type> word_count;          // Our lexer
-    word_count_grammar<iterator_type> g (word_count);  // Our parser
-
-    // read in the file int memory
-    std::string str (read_from_file(1 == argc ? "word_count.input" : argv[1]));
+    // Input
+    std::string str = "input string to parse";
     char const* first = str.c_str();
     char const* last = &first[str.size()];
 
-/*<  Parsing is done based on the token stream, not the character
-     stream read from the input. The function `tokenize_and_parse()` wraps
-     the passed iterator range `[first, last)` by the lexical analyzer and
-     uses its exposed iterators to parse the token stream.
->*/  bool r = lex::tokenize_and_parse(first, last, word_count, g);
+	bool r = lex::tokenize_and_phrase_parse(first, last, lex, g, space);
 
-    if (r) {
-        std::cout << "lines: " << g.l << ", words: " << g.w
-                  << ", characters: " << g.c << "\n";
+    if (r)
+    {
+        std::cout << "Success" << std::endl;
     }
-    else {
+    else
+    {
         std::string rest(first, last);
         std::cerr << "Parsing failed\n" << "stopped at: \""
-                  << rest << "\"\n";
+                  << rest << "\"" << std::endl;
     }
+
     return 0;
 }
-//]
+
+/*int main(int argc, char* argv[])
+{
+	typedef lex::lexertl::token<
+            boost::mpl::vector<std::string>,
+            boost::mpl::vector<std::string> > token_type;
+	typedef lex::lexertl::lexer<token_type> lexer_type;
+	typedef tokens<lexer_type>::iterator_type iterator_type;
+
+	// Create lexer and grammar
+    tokens<lexer_type> lex;
+    grammar<iterator_type> g(lex);
+    boost::spirit::ascii::space_type space; // skip spaces
+
+    // Interactively get input
+    std::cout << "Expression parser...\n\n";
+    std::cout << "Type an expression...or [q or Q] to quit\n\n";
+
+    std::string str;
+    while (std::getline(std::cin, str))
+    {
+        if (str.empty() || str[0] == 'q' || str[0] == 'Q')
+            break;
+
+        std::string::const_iterator iter = str.begin();
+        std::string::const_iterator end = str.end();
+        bool r = lex::tokenize_and_phrase_parse(iter, end, lex, g, space);
+
+        if (r && iter == end)
+        {
+            std::cout << "-------------------------\n";
+            std::cout << "Parsing succeeded\n";
+            std::cout << "-------------------------\n";
+        }
+        else
+        {
+            std::string rest(iter, end);
+            std::cout << "-------------------------\n";
+            std::cout << "Parsing failed\n";
+            std::cout << "stopped at: \" " << rest << "\"\n";
+            std::cout << "-------------------------\n";
+        }
+    }
+
+    return 0;
+}*/
