@@ -20,7 +20,6 @@
 #include <boost/variant/recursive_variant.hpp>
 #include <boost/variant/apply_visitor.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
-#include <boost/foreach.hpp>
 
 #include <string>
 #include <vector>
@@ -31,7 +30,9 @@ namespace client { namespace ast {
     // This part may be nothing
     struct nil {};
 
-    // This part may be an entire expression
+    // This part may be an entire expression. The forward declaration since we
+    // have cyclic references (operand may be an expression, but an expression
+    // consists of operands).
     struct expression;
 
     // Each part of the tree may be any one of these types.
@@ -193,7 +194,8 @@ int main()
 {
     std::cout << "WwuLang Compiler" << std::endl;
 
-    // Our parser, which will be iterating over a string
+    // Typedefs to simplify our definitions. Our calculator parser will be
+    // iterating over a string.
     typedef std::string::const_iterator iterator_type;
     typedef client::calculator<iterator_type> calculator;
 
@@ -211,7 +213,7 @@ int main()
         std::getline(std::cin, str);
 
         // Nice way to exit
-        if (str.empty() || str[0] == 'q' || str[0] == 'Q')
+        if (str.empty() || str == "q" || str == "Q")
             break;
 
         // To parse, Spirit requires that we have iterators, so get the
@@ -228,7 +230,6 @@ int main()
         // we've parsed the entire string
         if (r && iter == end)
         {
-            std::cout << "Parsing succeeded" << std::endl;
             std::cout << "AST: ";
             ast_print(ast);
             std::cout << std::endl;
@@ -237,8 +238,8 @@ int main()
         else
         {
             std::string rest(iter, end);
-            std::cout << "Parsing failed" << std::endl;
-            std::cout << "stopped at: \" " << rest << "\"" << std::endl;
+            std::cout << "Parsing failed, stopped at: \""
+                << rest << "\"" << std::endl;
         }
     }
 
