@@ -3,7 +3,9 @@ SRC        = ${wildcard *.cpp}
 OBJ        = ${SRC:.cpp=.o}
 DEPENDS    = .depends
 
-CXXFLAGS  += -g -O2 -Wall -std=c++11 $(shell llvm-config --cxxflags)
+# Note: we use -fexceptions because otherwise Boost complains that
+# boost::throw_exception can't be resolved
+CXXFLAGS  += -g -O2 -Wall -std=c++11 $(shell llvm-config --cxxflags) -fexceptions
 LDFLAGS   += $(shell llvm-config --ldflags --system-libs --libs core)
 
 all: ${OUT}

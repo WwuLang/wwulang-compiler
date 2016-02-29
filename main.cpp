@@ -33,6 +33,8 @@
 // Boost libraries for parsing and constructing the AST
 #include <boost/config/warning_disable.hpp>
 #include <boost/spirit/include/qi.hpp>
+#include <boost/spirit/include/qi_real.hpp>
+#include <boost/spirit/include/qi_char_class.hpp>
 #include <boost/variant/recursive_variant.hpp>
 #include <boost/variant/apply_visitor.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
@@ -54,13 +56,14 @@ namespace client { namespace ast {
     // name.
     typedef boost::variant<
         nil,
-        unsigned int,
+        float,
+        std::string,
         boost::recursive_wrapper<expression>
     > operand;
 
     // This part may consist of some operator (e.g. +) and then some other part
     // of the expression, which may consist of another number (using the
-    // unsigned int variant), nothing if this is the end (using nil), etc.
+    // float variant), nothing if this is the end (using nil), etc.
     struct operation
     {
         char operator_;
@@ -93,7 +96,7 @@ BOOST_FUSION_ADAPT_STRUCT(
 )
 
 // Needed for code generation
-//static std::unique_ptr<Module> TheModule;
+static std::unique_ptr<llvm::Module> TheModule;
 static llvm::IRBuilder<> Builder(llvm::getGlobalContext());
 static std::map<std::string, llvm::Value*> NamedValues;
 
@@ -120,9 +123,15 @@ namespace client { namespace ast {
         void operator()(nil) const { }
 
         // If we get a number, print out the number
-        void operator()(unsigned int n) const
+        void operator()(float n) const
         {
             std::cout << n;
+        }
+
+        // If we get a string, print out the variable name
+        void operator()(const std::string& s) const
+        {
+            std::cout << s;
         }
 
         // If we get an "operation", which consists of an operator (e.g. +) and
@@ -167,10 +176,23 @@ namespace client { namespace ast {
         llvm::Value* operator()(nil) const { return nullptr; }
 
         // If we get a number, create an LLVM floating-point number
-        llvm::Value* operator()(unsigned int n) const
+        llvm::Value* operator()(float n) const
         {
             return llvm::ConstantFP::get(llvm::getGlobalContext(),
-                    llvm::APFloat(static_cast<float>(n)));
+                    llvm::APFloat(n));
+        }
+
+        // If we get a string, it's a variable name
+        llvm::Value* operator()(const std::string& s) const
+        {
+            // Look up the variable name
+            std::map<std::string, llvm::Value*>::const_iterator it =
+                NamedValues.find(s);
+
+            if (it == NamedValues.end() || !it->second)
+                return ErrorV("Unknown variable name");
+
+            return it->second;
         }
 
         // If we get an "operation", which consists of an operator (e.g. +) and
@@ -240,8 +262,10 @@ namespace client
         calculator() : calculator::base_type(expression)
         {
             // This is because we did BOOST_SPIRIT_NO_PREDEFINED_TERMINALS
-            qi::uint_type uint_;
+            qi::float_type float_;
             qi::char_type char_;
+            qi::lexeme_type lexeme_;
+            qi::alnum_type alnum_;
 
             // Our BNF grammar
             //
@@ -252,12 +276,16 @@ namespace client
             term = factor >> *(char_('*') >> factor | char_('/') >> factor);
 
             // Do what's inside parenthesis before mult/div
-            factor = '(' >> expression >> ')' | uint_;
+            factor = '(' >> expression >> ')' | float_ | variable;
+
+            // Variables are alphanumeric
+            variable %= lexeme_[+alnum_];
 
             // Debugging
             BOOST_SPIRIT_DEBUG_NODE(expression);
             BOOST_SPIRIT_DEBUG_NODE(term);
             BOOST_SPIRIT_DEBUG_NODE(factor);
+            BOOST_SPIRIT_DEBUG_NODE(variable);
         }
 
         // Specify the iterator, result, and skip types for each
@@ -270,12 +298,17 @@ namespace client
         qi::rule<Iterator, ast::expression(), ascii::space_type> expression;
         qi::rule<Iterator, ast::expression(), ascii::space_type> term;
         qi::rule<Iterator, ast::operand(), ascii::space_type> factor;
+        qi::rule<Iterator, std::string(), ascii::space_type> variable;
     };
 }
 
 int main()
 {
     std::cout << "WwuLang Compiler" << std::endl;
+
+    // The module from LLVM containing all the code
+    TheModule = llvm::make_unique<llvm::Module>(
+            "WwuLang JIT Compiler", llvm::getGlobalContext());
 
     // Typedefs to simplify our definitions. Our calculator parser will be
     // iterating over a string.
@@ -326,7 +359,7 @@ int main()
             if (compiled)
                 compiled->dump();
             else
-                std::cout << "Could not compile?" << std::endl;
+                std::cout << "Error: failed to compile" << std::endl;
         }
         // If not, then we stopped early because of some error
         else
