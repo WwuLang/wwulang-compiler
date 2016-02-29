@@ -5,6 +5,7 @@
  * WwuLang Compiler
  *
  * Based on:
+ * http://llvm.org/docs/tutorial/LangImpl3.html
  * http://boost.org/doc/libs/1_60_0/libs/spirit/example/qi/compiler_tutorial/calc4.cpp
  */
 
@@ -15,15 +16,26 @@
 // what type the elements of our grammar are.
 #define BOOST_SPIRIT_NO_PREDEFINED_TERMINALS
 
+#include <map>
+#include <cctype>
+#include <cstdio>
+#include <string>
+#include <vector>
+#include <iostream>
+
+// For going from AST to LLVM IR
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
+
+// Boost libraries for parsing and constructing the AST
 #include <boost/config/warning_disable.hpp>
 #include <boost/spirit/include/qi.hpp>
 #include <boost/variant/recursive_variant.hpp>
 #include <boost/variant/apply_visitor.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
-
-#include <string>
-#include <vector>
-#include <iostream>
 
 // The Abstract Syntax Tree (AST)
 namespace client { namespace ast {
@@ -80,6 +92,18 @@ BOOST_FUSION_ADAPT_STRUCT(
     (std::vector<client::ast::operation>, rest)
 )
 
+// Needed for code generation
+//static std::unique_ptr<Module> TheModule;
+static llvm::IRBuilder<> Builder(llvm::getGlobalContext());
+static std::map<std::string, llvm::Value*> NamedValues;
+
+// Output an error and return null rather than a valid LLVM Value pointer
+llvm::Value* ErrorV(const char *s)
+{
+    std::cerr << "Error: " << s << std::endl;
+    return nullptr;
+}
+
 // After we create the AST, process it in some manner
 namespace client { namespace ast {
     // Output the AST visually
@@ -131,6 +155,65 @@ namespace client { namespace ast {
                 std::cout << ' ';
                 (*this)(op);
             }
+        }
+    };
+
+    // Go from AST to LLVM IR
+    struct compiler
+    {
+        typedef llvm::Value* result_type;
+
+        // When we get nothing, do nothing
+        llvm::Value* operator()(nil) const { return nullptr; }
+
+        // If we get a number, create an LLVM floating-point number
+        llvm::Value* operator()(unsigned int n) const
+        {
+            return llvm::ConstantFP::get(llvm::getGlobalContext(),
+                    llvm::APFloat(static_cast<float>(n)));
+        }
+
+        // If we get an "operation", which consists of an operator (e.g. +) and
+        // another operand
+        llvm::Value* operator()(const operation& x, llvm::Value* lhs) const
+        {
+            // Ignore if left-hand side null
+            if (!lhs)
+                return nullptr;
+
+            // Continue looking at this subtree. E.g., if this operand is nil,
+            // then do nothing, but if it's a number, make it floating point,
+            // etc.
+            llvm::Value* rhs = boost::apply_visitor(*this, x.operand_);
+
+            // Ignore if right-hand side null
+            if (!rhs)
+                return nullptr;
+
+            // Create the appropriate operation of the left- and right-hand
+            // sides
+            switch (x.operator_)
+            {
+                case '+': return Builder.CreateFAdd(lhs, rhs, "addtmp"); break;
+                case '-': return Builder.CreateFSub(lhs, rhs, "subtmp"); break;
+                case '*': return Builder.CreateFMul(lhs, rhs, "multmp"); break;
+                case '/': return Builder.CreateFDiv(lhs, rhs, "divtmp"); break;
+                default:  return ErrorV("invalid binary operator"); break;
+            }
+        }
+
+        // If we got an expression, process the first part and then all the
+        // other parts as well
+        llvm::Value* operator()(const expression& x) const
+        {
+            llvm::Value* state = boost::apply_visitor(*this, x.first);
+
+            for (const operation& op : x.rest)
+            {
+                state = (*this)(op, state);
+            }
+
+            return state;
         }
     };
 }}
@@ -224,15 +307,26 @@ int main()
         // Actually parse the input
         client::ast::expression ast;
         client::ast::printer ast_print;
+        client::ast::compiler ast_compile;
         bool r = phrase_parse(iter, end, calc, space, ast);
 
         // If the iterator matches the end iterator of the string,
         // we've parsed the entire string
         if (r && iter == end)
         {
+            // AST
             std::cout << "AST: ";
             ast_print(ast);
             std::cout << std::endl;
+
+            // LLVM IR text assembly output
+            std::cout << "Compiled: " << std::endl;
+            llvm::Value* compiled = ast_compile(ast);
+
+            if (compiled)
+                compiled->dump();
+            else
+                std::cout << "Could not compile?" << std::endl;
         }
         // If not, then we stopped early because of some error
         else

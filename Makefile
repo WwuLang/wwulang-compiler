@@ -3,8 +3,8 @@ SRC        = ${wildcard *.cpp}
 OBJ        = ${SRC:.cpp=.o}
 DEPENDS    = .depends
 
-CXXFLAGS  += -g -O2 -Wall -std=c++11
-LDFLAGS   += 
+CXXFLAGS  += -g -O2 -Wall -std=c++11 $(shell llvm-config --cxxflags)
+LDFLAGS   += $(shell llvm-config --ldflags --system-libs --libs core)
 
 all: ${OUT}
 
