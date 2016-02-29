@@ -35,6 +35,7 @@
 #include <boost/spirit/include/qi.hpp>
 #include <boost/spirit/include/qi_real.hpp>
 #include <boost/spirit/include/qi_char_class.hpp>
+#include <boost/spirit/include/phoenix_operator.hpp>
 #include <boost/variant/recursive_variant.hpp>
 #include <boost/variant/apply_visitor.hpp>
 #include <boost/fusion/include/adapt_struct.hpp>
@@ -55,7 +56,6 @@ namespace client { namespace ast {
     // reserved or we're declaring an instance of a class with the same
     // name.
     typedef boost::variant<
-        nil,
         float,
         std::string,
         boost::recursive_wrapper<expression>
@@ -80,6 +80,21 @@ namespace client { namespace ast {
         // can parse
         std::vector<operation> rest;
     };
+
+    // Define a variable to take on the value of an expression
+    struct assignment
+    {
+        std::string variable;
+        char op; // I can't figure out how to not require this...
+        expression expression_;
+    };
+
+    // A program can either be an assignment or an expression, or nothing
+    typedef boost::variant<
+        nil,
+        assignment,
+        expression
+    > program;
 }}
 
 // Makes this AST struct a "first-class fusion citizen that the grammar can
@@ -93,6 +108,12 @@ BOOST_FUSION_ADAPT_STRUCT(
     client::ast::expression,
     (client::ast::operand, first)
     (std::vector<client::ast::operation>, rest)
+)
+BOOST_FUSION_ADAPT_STRUCT(
+    client::ast::assignment,
+    (std::string, variable)
+    (char, op)
+    (client::ast::expression, expression_)
 )
 
 // Needed for code generation
@@ -164,6 +185,24 @@ namespace client { namespace ast {
                 std::cout << ' ';
                 (*this)(op);
             }
+        }
+
+        // For an assignment, output that the result will be read into this
+        // variable
+        void operator()(const assignment& x) const
+        {
+            std::cout << x.variable << '=';
+            (*this)(x.expression_);
+        }
+
+        // For the whole thing
+        void operator()(const program& x) const
+        {
+            // Don't just call (*this)(x) because then it'll call this same
+            // function creating an infinite loop. We want to call this
+            // function on what type it actually took on as part of the
+            // variant, i.e. whether it's an expression or assignment.
+            boost::apply_visitor(*this, x);
         }
     };
 
@@ -237,6 +276,25 @@ namespace client { namespace ast {
 
             return state;
         }
+
+        // For an assignment, create the variable
+        llvm::Value* operator()(const assignment& x) const
+        {
+            llvm::Value* expression = (*this)(x.expression_);
+
+            // Save the expression to the variable
+            NamedValues[x.variable] = expression;
+
+            // Also return this expression so we don't get a failed-to-compile
+            // error
+            return expression;
+        }
+
+        // For the whole thing
+        llvm::Value* operator()(const program& x) const
+        {
+            return boost::apply_visitor(*this, x);
+        }
     };
 }}
 
@@ -253,13 +311,13 @@ namespace client
             // For example, iterating over a std::string or std::vector<char>
             Iterator,
             // What we'll be parsing into, the result
-            ast::expression(),
+            ast::program(),
             // What we're skipping. In this case we probably don't care about
             // whitespace.
             ascii::space_type
         >
     {
-        calculator() : calculator::base_type(expression)
+        calculator() : calculator::base_type(program)
         {
             // This is because we did BOOST_SPIRIT_NO_PREDEFINED_TERMINALS
             qi::float_type float_;
@@ -269,6 +327,12 @@ namespace client
 
             // Our BNF grammar
             //
+            // The program is either an assignment or an expression
+            program = assignment | expression;
+
+            // Assignment
+            assignment = variable >> char_('=') >> expression;
+
             // Handle order of operations, do the addition/subtraction last
             expression = term >> *(char_('+') >> term | char_('-') >> term);
 
@@ -279,9 +343,15 @@ namespace client
             factor = '(' >> expression >> ')' | float_ | variable;
 
             // Variables are alphanumeric
+            //
+            // We use a lexeme here to make sure it doesn't ignore spaces, i.e.
+            // we want to make sure the variable name is only alphanumeric, not
+            // alphanumeric separated by spaces
             variable %= lexeme_[+alnum_];
 
             // Debugging
+            BOOST_SPIRIT_DEBUG_NODE(program);
+            BOOST_SPIRIT_DEBUG_NODE(assignment);
             BOOST_SPIRIT_DEBUG_NODE(expression);
             BOOST_SPIRIT_DEBUG_NODE(term);
             BOOST_SPIRIT_DEBUG_NODE(factor);
@@ -290,11 +360,22 @@ namespace client
 
         // Specify the iterator, result, and skip types for each
         //
-        // The first two result type is expression() because they have the
-        // Kleene star, having one term first with a variable number of
-        // operator followed by more terms aftewards. The last one doesn't.
-        // It's either a subexpression or an integer, which corresponds with
-        // our boost::variant that can be one of several types.
+        // program is either an assignment or an expression.
+        //
+        // assignment is it's own type.
+        //
+        // expression and term result type is expression() because they have
+        // the Kleene star, having one term first with a variable number of
+        // operator followed by more terms aftewards.
+        //
+        // factor doesn't. It's either a subexpression or an integer, which
+        // corresponds with our boost::variant that can be one of several
+        // types.
+        //
+        // The last is just a variable name, which is a string. Actually, it's
+        // a vector of chars that can be cast to a string.
+        qi::rule<Iterator, ast::program(), ascii::space_type> program;
+        qi::rule<Iterator, ast::assignment(), ascii::space_type> assignment;
         qi::rule<Iterator, ast::expression(), ascii::space_type> expression;
         qi::rule<Iterator, ast::expression(), ascii::space_type> term;
         qi::rule<Iterator, ast::operand(), ascii::space_type> factor;
@@ -338,7 +419,7 @@ int main()
         std::string::const_iterator end = str.end();
 
         // Actually parse the input
-        client::ast::expression ast;
+        client::ast::program ast;
         client::ast::printer ast_print;
         client::ast::compiler ast_compile;
         bool r = phrase_parse(iter, end, calc, space, ast);
