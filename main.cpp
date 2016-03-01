@@ -98,7 +98,10 @@ namespace client { namespace ast {
         expression expression_;
     };
 
-    // A program line can either be an assignment or an expression, or nothing
+    // A program line can either be an assignment or an expression
+    //
+    // Note: we no longer have nothing since the program is a vector, so the
+    // "nothing" program can be represented by a program vector of length zero.
     typedef boost::variant<
         /*nil,*/
         assignment,
@@ -188,7 +191,7 @@ namespace client { namespace ast {
                 case '-': std::cout << " -"; break;
                 case '*': std::cout << " *"; break;
                 case '/': std::cout << " /"; break;
-                default: std::cout << " ?"; break;
+                default:  std::cout << " ?"; break;
             }
         }
 
@@ -200,7 +203,7 @@ namespace client { namespace ast {
 
             for (const operation& op : x.rest)
             {
-                std::cout << ' ';
+                std::cout << " ";
                 (*this)(op);
             }
         }
@@ -225,19 +228,19 @@ namespace client { namespace ast {
         }
     };
 
-	// From LLVM example
-	//
-	/// CreateEntryBlockAlloca - Create an alloca instruction in the entry block of
-	/// the function.  This is used for mutable variables etc.
+    // From LLVM example
+    //
+    // Create an alloca instruction in the entry block of the function. This
+    // is used for mutable variables
     static llvm::AllocaInst* CreateEntryBlockAlloca(llvm::Function* func,
-            const std::string& variableName)
-	{
+        const std::string& variableName)
+    {
         builder_type TmpBuilder(&func->getEntryBlock(),
-                func->getEntryBlock().begin());
+            func->getEntryBlock().begin());
         return TmpBuilder.CreateAlloca(
-                llvm::Type::getDoubleTy(llvm::getGlobalContext()),
-                0, variableName.c_str());
-	}
+            llvm::Type::getDoubleTy(llvm::getGlobalContext()),
+            0, variableName.c_str());
+    }
 
     // Go from AST to LLVM IR
     struct compiler
@@ -304,9 +307,7 @@ namespace client { namespace ast {
             llvm::Value* state = boost::apply_visitor(*this, x.first);
 
             for (const operation& op : x.rest)
-            {
                 state = (*this)(op, state);
-            }
 
             return state;
         }
@@ -314,7 +315,7 @@ namespace client { namespace ast {
         // For an assignment, create the variable
         llvm::Value* operator()(const assignment& x) const
         {
-            // Evaluate what is on the right side of the assignment operator
+            // Look at what is on the right side of the assignment operator
             llvm::Value* expression = (*this)(x.expression_);
 
             // Only allocate memory and store the value if the expression
@@ -324,6 +325,7 @@ namespace client { namespace ast {
                 // We'll be adding the allocations to the main function
                 llvm::Function* func = TheModule->getFunction(MainName);
 
+                // The main function better exist
                 assert(func);
 
                 // Create a variable and save the result to it
@@ -387,6 +389,11 @@ namespace client
             program_line = assignment | expression;
 
             // Assignment
+            //
+            // We do lit_("=") rather than char_('=') since we don't actually
+            // want to store the equal sign in the AST like we do when doing
+            // operators like + or -. We only want to store the expression and
+            // what variable we want to save that expressions's result to.
             assignment = variable >> lit_("=") >> expression;
 
             // Handle order of operations, do the addition/subtraction last
@@ -444,17 +451,17 @@ namespace client
 // code since during an assignment it adds allocations to this entry point.
 llvm::Function* createMainPrototype()
 {
-	// Make the function type: double()
-	std::vector<llvm::Type*> noArguments;
-	llvm::FunctionType* functionType = llvm::FunctionType::get(
-		llvm::Type::getDoubleTy(llvm::getGlobalContext()), noArguments, false);
-	llvm::Function* func = llvm::Function::Create(
-		functionType, llvm::Function::ExternalLinkage, MainName, TheModule.get());
+    // Make the function type: double()
+    std::vector<llvm::Type*> noArguments;
+    llvm::FunctionType* functionType = llvm::FunctionType::get(
+        llvm::Type::getDoubleTy(llvm::getGlobalContext()), noArguments, false);
+    llvm::Function* func = llvm::Function::Create(
+        functionType, llvm::Function::ExternalLinkage, MainName, TheModule.get());
 
-	// Create a new basic block to start insertion into
-	llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create(
-		llvm::getGlobalContext(), "entry", func);
-	Builder.SetInsertPoint(basicBlock);
+    // Create a new basic block to start insertion into
+    llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create(
+        llvm::getGlobalContext(), "entry", func);
+    Builder.SetInsertPoint(basicBlock);
 
     return func;
 }
@@ -470,6 +477,7 @@ llvm::Function* createMainFunction(llvm::Value* body,
         // See if we've already created the prototype
         func = TheModule->getFunction(MainName);
 
+        // If it doesn't exist, create it
         if (!func)
             func = createMainPrototype();
 
@@ -478,20 +486,20 @@ llvm::Function* createMainFunction(llvm::Value* body,
             return nullptr;
     }
 
-	// Create a new basic block to start insertion into
-	llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create(
-		llvm::getGlobalContext(), "entry", func);
-	Builder.SetInsertPoint(basicBlock);
+    // Create a new basic block to start insertion into
+    llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create(
+        llvm::getGlobalContext(), "entry", func);
+    Builder.SetInsertPoint(basicBlock);
 
-	// Create body through parsing the actual code
-	llvm::Value* returnValue = body;
+    // Create body through parsing the actual code
+    llvm::Value* returnValue = body;
 
     if (returnValue)
     {
-        // Finish off the function.
+        // Finish off the function
         Builder.CreateRet(returnValue);
 
-        // Validate the generated code, checking for consistency.
+        // Validate the generated code, checking for consistency
         llvm::verifyFunction(*func);
 
         return func;
@@ -523,6 +531,8 @@ int main()
         // multiple entry points, old code, etc.
         TheModule = llvm::make_unique<llvm::Module>(
                 "WwuLang JIT Compiler", llvm::getGlobalContext());
+
+        // Reset so variables don't carry over from the last compile
         NamedValues.clear();
 
         // Interactively get user input to parse
