@@ -317,15 +317,20 @@ namespace client { namespace ast {
             // Evaluate what is on the right side of the assignment operator
             llvm::Value* expression = (*this)(x.expression_);
 
-            // We'll be adding the allocations to the main function
-            llvm::Function* func = TheModule->getFunction(MainName);
+            // Only allocate memory and store the value if the expression
+            // evaluated, not if it returned null
+            if (expression)
+            {
+                // We'll be adding the allocations to the main function
+                llvm::Function* func = TheModule->getFunction(MainName);
 
-            assert(func);
+                assert(func);
 
-            // Create a variable and save the result to it
-            llvm::AllocaInst* alloca = CreateEntryBlockAlloca(func, x.variable);
-            Builder.CreateStore(expression, alloca);
-            NamedValues[x.variable] = alloca;
+                // Create a variable and save the result to it
+                llvm::AllocaInst* alloca = CreateEntryBlockAlloca(func, x.variable);
+                Builder.CreateStore(expression, alloca);
+                NamedValues[x.variable] = alloca;
+            }
 
             // Also return this expression so we don't get a failed-to-compile
             // error
