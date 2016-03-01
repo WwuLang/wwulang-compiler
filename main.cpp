@@ -4,9 +4,16 @@
  *
  * WwuLang Compiler
  *
- * Based on:
- * http://llvm.org/docs/tutorial/LangImpl3.html
+ * References:
+ *
+ * Example used to figure out Spirit parsing and AST generation:
  * http://boost.org/doc/libs/1_60_0/libs/spirit/example/qi/compiler_tutorial/calc4.cpp
+ *
+ * Example used to take AST to the LLVM IR
+ * http://llvm.org/docs/tutorial/LangImpl3.html
+ *
+ * Example used for mutable variable support
+ * http://llvm.org/docs/tutorial/LangImpl7.html
  */
 
 // Allow easy debugging of parser (not working yet)
@@ -19,6 +26,7 @@
 #include <map>
 #include <cctype>
 #include <cstdio>
+#include <cassert>
 #include <string>
 #include <vector>
 #include <iostream>
@@ -29,6 +37,7 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/IR/NoFolder.h>
 
 // Boost libraries for parsing and constructing the AST
 #include <boost/config/warning_disable.hpp>
@@ -117,9 +126,16 @@ BOOST_FUSION_ADAPT_STRUCT(
 )
 
 // Needed for code generation
+const std::string MainName = "main";
 static std::unique_ptr<llvm::Module> TheModule;
-static llvm::IRBuilder<> Builder(llvm::getGlobalContext());
-static std::map<std::string, llvm::Value*> NamedValues;
+static std::map<std::string, llvm::AllocaInst*> NamedValues;
+
+// With constant folding (the default):
+//typedef llvm::IRBuilder<> builder_type;
+// Without constant folding (more interesting IR output):
+typedef llvm::IRBuilder<true, llvm::NoFolder> builder_type;
+
+static builder_type Builder(llvm::getGlobalContext());
 
 // Output an error and return null rather than a valid LLVM Value pointer
 llvm::Value* ErrorV(const char *s)
@@ -206,6 +222,20 @@ namespace client { namespace ast {
         }
     };
 
+	// From LLVM example
+	//
+	/// CreateEntryBlockAlloca - Create an alloca instruction in the entry block of
+	/// the function.  This is used for mutable variables etc.
+    static llvm::AllocaInst* CreateEntryBlockAlloca(llvm::Function* func,
+            const std::string& variableName)
+	{
+        builder_type TmpBuilder(&func->getEntryBlock(),
+                func->getEntryBlock().begin());
+        return TmpBuilder.CreateAlloca(
+                llvm::Type::getDoubleTy(llvm::getGlobalContext()),
+                0, variableName.c_str());
+	}
+
     // Go from AST to LLVM IR
     struct compiler
     {
@@ -225,13 +255,14 @@ namespace client { namespace ast {
         llvm::Value* operator()(const std::string& s) const
         {
             // Look up the variable name
-            std::map<std::string, llvm::Value*>::const_iterator it =
+            std::map<std::string, llvm::AllocaInst*>::const_iterator it =
                 NamedValues.find(s);
 
             if (it == NamedValues.end() || !it->second)
                 return ErrorV("Unknown variable name");
 
-            return it->second;
+            // Load the value from memory
+            return Builder.CreateLoad(it->second, s.c_str());
         }
 
         // If we get an "operation", which consists of an operator (e.g. +) and
@@ -280,10 +311,18 @@ namespace client { namespace ast {
         // For an assignment, create the variable
         llvm::Value* operator()(const assignment& x) const
         {
+            // Evaluate what is on the right side of the assignment operator
             llvm::Value* expression = (*this)(x.expression_);
 
-            // Save the expression to the variable
-            NamedValues[x.variable] = expression;
+            // We'll be adding the allocations to the main function
+            llvm::Function* func = TheModule->getFunction(MainName);
+
+            assert(func);
+
+            // Create a variable and save the result to it
+            llvm::AllocaInst* alloca = CreateEntryBlockAlloca(func, x.variable);
+            Builder.CreateStore(expression, alloca);
+            NamedValues[x.variable] = alloca;
 
             // Also return this expression so we don't get a failed-to-compile
             // error
@@ -383,13 +422,71 @@ namespace client
     };
 }
 
+// We need to create the prototype and the entry point before compiling the
+// code since during an assignment it adds allocations to this entry point.
+llvm::Function* createMainPrototype()
+{
+	// Make the function type: double()
+	std::vector<llvm::Type*> noArguments;
+	llvm::FunctionType* functionType = llvm::FunctionType::get(
+		llvm::Type::getDoubleTy(llvm::getGlobalContext()), noArguments, false);
+	llvm::Function* func = llvm::Function::Create(
+		functionType, llvm::Function::ExternalLinkage, MainName, TheModule.get());
+
+	// Create a new basic block to start insertion into
+	llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create(
+		llvm::getGlobalContext(), "entry", func);
+	Builder.SetInsertPoint(basicBlock);
+
+    return func;
+}
+
+// Take some code, e.g. assignment, and wrap it in a main function so that
+// it'll actually be able to do something
+llvm::Function* createMainFunction(llvm::Value* body,
+        llvm::Function* func = nullptr)
+{
+    // If we don't get the function directly, try to find it
+    if (!func)
+    {
+        // See if we've already created the prototype
+        func = TheModule->getFunction(MainName);
+
+        if (!func)
+            func = createMainPrototype();
+
+        // For some reason couldn't generate the prototype
+        if (!func)
+            return nullptr;
+    }
+
+	// Create a new basic block to start insertion into
+	llvm::BasicBlock* basicBlock = llvm::BasicBlock::Create(
+		llvm::getGlobalContext(), "entry", func);
+	Builder.SetInsertPoint(basicBlock);
+
+	// Create body through parsing the actual code
+	llvm::Value* returnValue = body;
+
+    if (returnValue)
+    {
+        // Finish off the function.
+        Builder.CreateRet(returnValue);
+
+        // Validate the generated code, checking for consistency.
+        llvm::verifyFunction(*func);
+
+        return func;
+    }
+
+    // Error reading body, remove function
+    func->eraseFromParent();
+    return nullptr;
+}
+
 int main()
 {
     std::cout << "WwuLang Compiler" << std::endl;
-
-    // The module from LLVM containing all the code
-    TheModule = llvm::make_unique<llvm::Module>(
-            "WwuLang JIT Compiler", llvm::getGlobalContext());
 
     // Typedefs to simplify our definitions. Our calculator parser will be
     // iterating over a string.
@@ -404,6 +501,12 @@ int main()
 
     while (true)
     {
+        // Recreate this every time we compile something so we don't have
+        // multiple entry points, old code, etc.
+        TheModule = llvm::make_unique<llvm::Module>(
+                "WwuLang JIT Compiler", llvm::getGlobalContext());
+        NamedValues.clear();
+
         // Interactively get user input to parse
         std::cout << "> ";
         std::string str;
@@ -417,6 +520,11 @@ int main()
         // iterators for the string we just read
         std::string::const_iterator iter = str.begin();
         std::string::const_iterator end = str.end();
+
+        // Must create the prototype before parsing since when making
+        // assignments we'll be initializing memory at the beginning of this
+        // main function
+        llvm::Function* mainFunction = createMainPrototype();
 
         // Actually parse the input
         client::ast::program ast;
@@ -436,9 +544,10 @@ int main()
             // LLVM IR text assembly output
             std::cout << "Compiled: " << std::endl;
             llvm::Value* compiled = ast_compile(ast);
+            llvm::Function* program = createMainFunction(compiled, mainFunction);
 
-            if (compiled)
-                compiled->dump();
+            if (program)
+                program->dump();
             else
                 std::cout << "Error: failed to compile" << std::endl;
         }
