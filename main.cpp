@@ -95,7 +95,6 @@ namespace client { namespace ast {
     struct assignment
     {
         std::string variable;
-        char op; // I can't figure out how to not require this...
         expression expression_;
     };
 
@@ -125,7 +124,6 @@ BOOST_FUSION_ADAPT_STRUCT(
 BOOST_FUSION_ADAPT_STRUCT(
     client::ast::assignment,
     (std::string, variable)
-    (char, op)
     (client::ast::expression, expression_)
 )
 
@@ -384,7 +382,7 @@ namespace client
             program_line = assignment | expression;
 
             // Assignment
-            assignment = variable >> char_('=') >> expression;
+            assignment = variable >> lit_("=") >> expression;
 
             // Handle order of operations, do the addition/subtraction last
             expression = term >> *(char_('+') >> term | char_('-') >> term);
