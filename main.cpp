@@ -42,6 +42,7 @@
 // Boost libraries for parsing and constructing the AST
 #include <boost/config/warning_disable.hpp>
 #include <boost/spirit/include/qi.hpp>
+#include <boost/spirit/include/qi_lit.hpp>
 #include <boost/spirit/include/qi_real.hpp>
 #include <boost/spirit/include/qi_char_class.hpp>
 #include <boost/spirit/include/phoenix_operator.hpp>
@@ -98,12 +99,15 @@ namespace client { namespace ast {
         expression expression_;
     };
 
-    // A program can either be an assignment or an expression, or nothing
+    // A program line can either be an assignment or an expression, or nothing
     typedef boost::variant<
-        nil,
+        /*nil,*/
         assignment,
         expression
-    > program;
+    > program_line;
+
+    // A program can consist of multiple lines
+    typedef std::vector<program_line> program;
 }}
 
 // Makes this AST struct a "first-class fusion citizen that the grammar can
@@ -207,8 +211,8 @@ namespace client { namespace ast {
         // variable
         void operator()(const assignment& x) const
         {
-            std::cout << x.variable << '=';
             (*this)(x.expression_);
+            std::cout << " =" << x.variable << " ";
         }
 
         // For the whole thing
@@ -218,7 +222,8 @@ namespace client { namespace ast {
             // function creating an infinite loop. We want to call this
             // function on what type it actually took on as part of the
             // variant, i.e. whether it's an expression or assignment.
-            boost::apply_visitor(*this, x);
+            for (const program_line& line : x)
+                boost::apply_visitor(*this, line);
         }
     };
 
@@ -329,10 +334,15 @@ namespace client { namespace ast {
             return expression;
         }
 
-        // For the whole thing
+        // For the whole thing, return whatever was the last value
         llvm::Value* operator()(const program& x) const
         {
-            return boost::apply_visitor(*this, x);
+            llvm::Value* lastValue = nullptr;
+
+            for (const program_line& line : x)
+                lastValue = boost::apply_visitor(*this, line);
+
+            return lastValue;
         }
     };
 }}
@@ -363,11 +373,15 @@ namespace client
             qi::char_type char_;
             qi::lexeme_type lexeme_;
             qi::alnum_type alnum_;
+            qi::lit_type lit_;
 
             // Our BNF grammar
             //
-            // The program is either an assignment or an expression
-            program = assignment | expression;
+            // A program consists of one or more line with a semicolon separating
+            program = (program_line % ';') >> -lit_(";");
+
+            // The program line is either an assignment or an expression
+            program_line = assignment | expression;
 
             // Assignment
             assignment = variable >> char_('=') >> expression;
@@ -390,6 +404,7 @@ namespace client
 
             // Debugging
             BOOST_SPIRIT_DEBUG_NODE(program);
+            BOOST_SPIRIT_DEBUG_NODE(program_line);
             BOOST_SPIRIT_DEBUG_NODE(assignment);
             BOOST_SPIRIT_DEBUG_NODE(expression);
             BOOST_SPIRIT_DEBUG_NODE(term);
@@ -399,9 +414,8 @@ namespace client
 
         // Specify the iterator, result, and skip types for each
         //
-        // program is either an assignment or an expression.
-        //
-        // assignment is it's own type.
+        // program is a program, program_line is either an assignment or an
+        // expression, and assignment is an assignment.
         //
         // expression and term result type is expression() because they have
         // the Kleene star, having one term first with a variable number of
@@ -414,6 +428,7 @@ namespace client
         // The last is just a variable name, which is a string. Actually, it's
         // a vector of chars that can be cast to a string.
         qi::rule<Iterator, ast::program(), ascii::space_type> program;
+        qi::rule<Iterator, ast::program_line(), ascii::space_type> program_line;
         qi::rule<Iterator, ast::assignment(), ascii::space_type> assignment;
         qi::rule<Iterator, ast::expression(), ascii::space_type> expression;
         qi::rule<Iterator, ast::expression(), ascii::space_type> term;
