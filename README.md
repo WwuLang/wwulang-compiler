@@ -1,6 +1,6 @@
 # Simple Calculator Compiler Frontend with Spirit and LLVM
 We wrote a compiler frontend that could take in simple programs consisting of
-+, -, \*, and / with parethesis, assignment statements, and multiple lines
++, -, \*, and / with parenthesis, assignment statements, and multiple lines
 separated by semicolons. For the parser we used Boost Spirit, and then we
 generated an intermediate representation using LLVM.
 
